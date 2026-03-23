@@ -20,14 +20,14 @@ static void my_mic_end() {
 }
 
 static bool my_mic_record(int16_t* buffer, size_t samples, uint32_t sample_rate) {
-    // Fill buffer with audio samples from your hardware
-    // This can be synchronous (blocking) or start an async DMA transfer
+    // Fill buffer with audio samples from your hardware.
+    // This can be synchronous (blocking) or start an async DMA transfer.
     memset(buffer, 0, samples * sizeof(int16_t)); // Silence placeholder
     return true;
 }
 
 static bool my_mic_is_recording_done() {
-    // Return true when the recording started by record() is complete
+    // Return true when the recording started by record() is complete.
     return true;
 }
 
