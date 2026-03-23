@@ -1,0 +1,29 @@
+{
+    "name": "RoamCast",
+    "version": "1.0.0",
+    "description": "ESP32 device SDK for AudioCombine satellite microphone network",
+    "keywords": ["audio", "iot", "esp32", "mqtt", "microphone", "satellite"],
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/garethllewelyn/audiocombine.git"
+    },
+    "authors": [
+        {
+            "name": "AudioCombine"
+        }
+    ],
+    "license": "MIT",
+    "frameworks": "arduino",
+    "platforms": "espressif32",
+    "dependencies": {
+        "bblanchon/ArduinoJson": "^7.0.0",
+        "knolleary/PubSubClient": "^2.8"
+    },
+    "build": {
+        "srcFilter": [
+            "+<*>",
+            "+<roamcast/**>",
+            "+<boards/**>"
+        ]
+    }
+}
