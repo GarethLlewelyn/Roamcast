@@ -1,11 +1,14 @@
 #include "health_reporter.h"
 #include "../RoamCastInternal.h"
+#include "../RoamCastLog.h"
 #include "mqtt_client.h"
 #include "wifi_manager.h"
 
-// Defined in RoamCast main orchestrator or user sketch
-extern unsigned long rc_loop_get_max_us();
-extern void rc_loop_reset_max_us();
+// Defined in RoamCast.cpp (C linkage — must match extern "C" there)
+extern "C" {
+    unsigned long rc_loop_get_max_us(void);
+    void rc_loop_reset_max_us(void);
+}
 
 // Audio capture stats — provided by audio_capture module
 extern bool rc_audio_capture_is_streaming();
@@ -23,7 +26,7 @@ void rc_health_reporter_init(const char* device_id, uint32_t heartbeat_interval_
 
     // Publish initial online status
     rc_mqtt_publish_status("online", rc_audio_capture_is_streaming());
-    Serial.println("[RoamCast] Health reporter initialized");
+    RC_DBG("Health reporter initialized (interval=%dms)", heartbeat_interval_ms);
 }
 
 void rc_health_reporter_loop() {

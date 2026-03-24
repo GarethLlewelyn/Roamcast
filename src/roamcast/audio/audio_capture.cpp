@@ -1,6 +1,7 @@
 #include "audio_capture.h"
 #include "audio_dsp.h"
 #include "../RoamCastInternal.h"
+#include "../RoamCastLog.h"
 #include "../core/runtime_config.h"
 #include "../core/mqtt_client.h"
 
@@ -94,6 +95,7 @@ static void prebuf_flush() {
 void rc_audio_capture_init(const char* device_id, uint16_t udp_audio_port,
                            float dc_block_alpha, uint16_t gate_threshold,
                            uint8_t gate_hold_frames, uint16_t audio_level_report_ms) {
+    RC_DBG("AudioCapture: init()");
     stored_device_id = device_id;
     _udp_audio_port = udp_audio_port;
     _dc_block_alpha = dc_block_alpha;
@@ -103,9 +105,11 @@ void rc_audio_capture_init(const char* device_id, uint16_t udp_audio_port,
 
     auto* input = roamcast::internal::getAudioInput();
     if (!input) {
-        Serial.println("[RoamCast] ERROR: audio_input callbacks not set!");
+        RC_LOG("AudioCapture: ERROR — no audio_input callbacks!");
         return;
     }
+    RC_DBG("AudioCapture: input=%p, init=%p begin=%p record=%p isDone=%p",
+            input, input->init, input->begin, input->record, input->isRecordingDone);
 
     // Initialize audio input hardware via callbacks
     const auto* cfg = roamcast::internal::getConfig();
@@ -116,13 +120,17 @@ void rc_audio_capture_init(const char* device_id, uint16_t udp_audio_port,
         // Let board preset override magnification etc via the config struct's audio input config
         // (these are set in the board preset's init callback)
     }
-    input->init(&input_cfg);
+    bool init_ok = input->init(&input_cfg);
+    RC_DBG("AudioCapture: input->init()=%d", init_ok);
 
     // Ensure mic is active
-    input->begin();
+    bool begin_ok = input->begin();
+    RC_DBG("AudioCapture: input->begin()=%d", begin_ok);
 
     // Initialize UDP socket
     udp.begin(0);
+    RC_DBG("AudioCapture: UDP target=%s:%d",
+            rc_get_server_ip() ? rc_get_server_ip() : "NULL", _udp_audio_port);
 
     // Derive numeric device_id from last 4 bytes of MAC
     uint8_t mac[6];
@@ -130,30 +138,42 @@ void rc_audio_capture_init(const char* device_id, uint16_t udp_audio_port,
     numeric_device_id = ((uint32_t)mac[2] << 24) | ((uint32_t)mac[3] << 16) |
                         ((uint32_t)mac[4] << 8) | (uint32_t)mac[5];
 
-    Serial.printf("[RoamCast] Audio capture initialized (device_id=0x%08X)\n", numeric_device_id);
+    RC_DBG("AudioCapture: Ready (id=0x%08X, rate=%d, frame=%d)",
+            numeric_device_id, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SAMPLES);
 }
 
 void rc_audio_capture_start() {
+    RC_DBG("AudioCapture: start()");
     auto* input = roamcast::internal::getAudioInput();
-    if (!input) return;
+    if (!input) {
+        RC_LOG("AudioCapture: start() FAILED — no audio input!");
+        return;
+    }
 
     streaming = true;
     sequence_number = 0;
     stream_start_ms = millis();
     last_level_report_ms = millis();
 
-    input->record(fill_buffer, AUDIO_FRAME_SAMPLES, AUDIO_SAMPLE_RATE);
+    bool rec_ok = input->record(fill_buffer, AUDIO_FRAME_SAMPLES, AUDIO_SAMPLE_RATE);
     record_started_at = millis();
     recording_active = true;
 
-    Serial.println("[RoamCast] Audio streaming started");
+    RC_DBG("AudioCapture: Streaming started (record=%d)", rec_ok);
 }
 
 void rc_audio_capture_stop() {
     streaming = false;
     recording_active = false;
-    Serial.println("[RoamCast] Audio streaming stopped");
+    RC_DBG("AudioCapture: Streaming stopped");
 }
+
+// Diagnostic counters for periodic reporting
+static uint32_t _loop_calls = 0;
+static uint32_t _frames_sent = 0;
+static uint32_t _underrun_total = 0;
+static uint32_t _recording_done_count = 0;
+static unsigned long _last_capture_diag_ms = 0;
 
 void rc_audio_capture_loop() {
     if (!streaming) return;
@@ -161,8 +181,23 @@ void rc_audio_capture_loop() {
     auto* input = roamcast::internal::getAudioInput();
     if (!input) return;
 
+    _loop_calls++;
+
+    // Periodic capture diagnostics every 10 seconds
+    unsigned long diag_now = millis();
+    if (diag_now - _last_capture_diag_ms >= 10000) {
+        _last_capture_diag_ms = diag_now;
+        bool is_done = input->isRecordingDone();
+        RC_DBG("AudioCapture: loops=%u done=%u sent=%u underruns=%u isDone=%d active=%d seq=%u",
+                _loop_calls, _recording_done_count, _frames_sent, _dma_underruns, is_done, recording_active, sequence_number);
+        _loop_calls = 0;
+        _recording_done_count = 0;
+        _frames_sent = 0;
+    }
+
     // Check if current recording is complete
     if (input->isRecordingDone() && recording_active) {
+        _recording_done_count++;
         unsigned long now = millis();
         unsigned long elapsed = now - record_started_at;
 
@@ -202,11 +237,13 @@ void rc_audio_capture_loop() {
             }
             calculate_levels(send_buffer, AUDIO_FRAME_SAMPLES, current_rms, current_peak);
             send_udp_packet(send_buffer);
+            _frames_sent++;
         } else {
             static int16_t silence[AUDIO_FRAME_SAMPLES] = {0};
             current_rms = 0.0f;
             current_peak = 0.0f;
             send_udp_packet(silence);
+            _frames_sent++;
         }
 
         // Report audio level via MQTT periodically

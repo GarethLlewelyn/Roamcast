@@ -1,5 +1,6 @@
 #include "auth_client.h"
 #include "runtime_config.h"
+#include "../RoamCastLog.h"
 
 #include <HTTPClient.h>
 #include <WiFiClient.h>
@@ -9,15 +10,13 @@
 static const char* _device_id = nullptr;
 static RcAuthState _state = RC_AUTH_NOT_STARTED;
 static char        _jwt_token[2048];
-static unsigned long _token_expiry_epoch = 0;   // Unix seconds
+static unsigned long _token_expiry_epoch = 0;
 static unsigned long _last_refresh_check = 0;
 
-static const unsigned long REFRESH_CHECK_INTERVAL_MS = 60000;    // Check every 60s
-static const unsigned long REFRESH_BEFORE_EXPIRY_S   = 3600;     // Refresh 1h before expiry
+static const unsigned long REFRESH_CHECK_INTERVAL_MS = 60000;
+static const unsigned long REFRESH_BEFORE_EXPIRY_S   = 3600;
 static const int           LOGIN_RETRY_DELAY_MS      = 2000;
 static const int           HTTP_TIMEOUT_MS            = 5000;
-
-// ---- Internal helpers ----
 
 static String build_api_url(const char* path) {
     return String("http://") + rc_get_server_ip() + ":" + String(rc_get_api_port()) + "/api/" + path;
@@ -27,7 +26,6 @@ static bool probe_hub() {
     HTTPClient http;
     WiFiClient wifi;
 
-    // Step 1: Ping (public endpoint)
     String ping_url = build_api_url("auth/ping");
     http.begin(wifi, ping_url);
     http.setTimeout(HTTP_TIMEOUT_MS);
@@ -35,12 +33,11 @@ static bool probe_hub() {
     http.end();
 
     if (code <= 0) {
-        Serial.printf("[RoamCast Auth] Hub unreachable at %s:%d (HTTP %d)\n",
-                      rc_get_server_ip(), rc_get_api_port(), code);
+        RC_LOG("Auth: Hub unreachable at %s:%d (HTTP %d)", rc_get_server_ip(), rc_get_api_port(), code);
         return false;
     }
 
-    Serial.printf("[RoamCast Auth] Hub reachable (ping %d)\n", code);
+    RC_LOG("Auth: Hub reachable (HTTP %d)", code);
     return true;
 }
 
@@ -48,7 +45,6 @@ static bool check_auth_required() {
     HTTPClient http;
     WiFiClient wifi;
 
-    // Hit a protected endpoint to see if we get 401/403
     String devices_url = build_api_url("devices");
     http.begin(wifi, devices_url);
     http.setTimeout(HTTP_TIMEOUT_MS);
@@ -56,16 +52,15 @@ static bool check_auth_required() {
     http.end();
 
     if (code == 401 || code == 403) {
-        Serial.println("[RoamCast Auth] Hub requires authentication");
+        RC_DBG("Auth: Hub requires authentication");
         return true;
     }
 
-    Serial.printf("[RoamCast Auth] Hub does not require auth (HTTP %d)\n", code);
+    RC_DBG("Auth: Hub does not require auth (HTTP %d)", code);
     return false;
 }
 
 static bool extract_token_expiry(const char* jwt) {
-    // JWT format: header.payload.signature — decode the payload (segment 1)
     const char* first_dot = strchr(jwt, '.');
     if (!first_dot) return false;
 
@@ -76,49 +71,43 @@ static bool extract_token_expiry(const char* jwt) {
     size_t b64_len = second_dot - payload_start;
     if (b64_len > 2048) return false;
 
-    // Copy and fix base64url -> base64
     char b64[2048];
     memcpy(b64, payload_start, b64_len);
     b64[b64_len] = '\0';
 
-    // Replace URL-safe chars
     for (size_t i = 0; i < b64_len; i++) {
         if (b64[i] == '-') b64[i] = '+';
         else if (b64[i] == '_') b64[i] = '/';
     }
 
-    // Add padding
     while (b64_len % 4 != 0) {
         b64[b64_len++] = '=';
         b64[b64_len] = '\0';
     }
 
-    // Decode
     unsigned char decoded[2048];
     size_t decoded_len = 0;
     int ret = mbedtls_base64_decode(decoded, sizeof(decoded) - 1, &decoded_len,
                                      (const unsigned char*)b64, b64_len);
     if (ret != 0) {
-        Serial.printf("[RoamCast Auth] Base64 decode failed (%d)\n", ret);
+        RC_DBG("Auth: Base64 decode failed (%d)", ret);
         return false;
     }
     decoded[decoded_len] = '\0';
 
-    // Parse JSON for "exp" claim
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, (char*)decoded, decoded_len);
     if (err) {
-        Serial.printf("[RoamCast Auth] JWT payload parse error: %s\n", err.c_str());
+        RC_DBG("Auth: JWT payload parse error: %s", err.c_str());
         return false;
     }
 
     if (doc["exp"].is<unsigned long>()) {
         _token_expiry_epoch = doc["exp"].as<unsigned long>();
-        Serial.printf("[RoamCast Auth] Token expires at epoch %lu\n", _token_expiry_epoch);
+        RC_DBG("Auth: Token expires at epoch %lu", _token_expiry_epoch);
         return true;
     }
 
-    Serial.println("[RoamCast Auth] No 'exp' claim in token");
     return false;
 }
 
@@ -146,13 +135,13 @@ static bool do_login(const char* username, const char* password) {
         JsonDocument resp;
         DeserializationError err = deserializeJson(resp, response);
         if (err) {
-            Serial.printf("[RoamCast Auth] Login response parse error: %s\n", err.c_str());
+            RC_LOG("Auth: Login response parse error: %s", err.c_str());
             return false;
         }
 
         const char* token = resp["access_token"] | (const char*)nullptr;
         if (!token) {
-            Serial.println("[RoamCast Auth] No access_token in response");
+            RC_LOG("Auth: No access_token in response");
             return false;
         }
 
@@ -160,19 +149,18 @@ static bool do_login(const char* username, const char* password) {
         _jwt_token[sizeof(_jwt_token) - 1] = '\0';
 
         if (!extract_token_expiry(_jwt_token)) {
-            // Default to 6 days if we can't parse expiry
             struct timeval tv;
             gettimeofday(&tv, NULL);
             _token_expiry_epoch = tv.tv_sec + (6 * 24 * 3600);
         }
 
-        Serial.println("[RoamCast Auth] Login successful");
+        RC_LOG("Auth: Login successful");
         return true;
     }
 
     String err_body = http.getString();
     http.end();
-    Serial.printf("[RoamCast Auth] Login failed (HTTP %d): %s\n", code, err_body.c_str());
+    RC_LOG("Auth: Login failed (HTTP %d)", code);
     return false;
 }
 
@@ -187,37 +175,32 @@ void rc_auth_client_init(const char* device_id) {
 }
 
 void rc_auth_client_startup(const char* username, const char* password) {
-    // Skip auth entirely if no credentials configured
     if (username == nullptr || strlen(username) == 0) {
-        Serial.println("[RoamCast Auth] No credentials configured - skipping auth");
+        RC_LOG("Auth: No credentials — skipping");
         _state = RC_AUTH_NOT_REQUIRED;
         return;
     }
 
     _state = RC_AUTH_PROBING;
 
-    // Probe hub reachability
     if (!probe_hub()) {
-        Serial.println("[RoamCast Auth] Hub unreachable - entering degraded mode");
+        RC_LOG("Auth: Hub unreachable — degraded mode");
         _state = RC_AUTH_DEGRADED;
         return;
     }
 
-    // Check if auth is actually required
     if (!check_auth_required()) {
-        Serial.println("[RoamCast Auth] Hub is open - no auth needed");
+        RC_LOG("Auth: Hub is open — no auth needed");
         _state = RC_AUTH_NOT_REQUIRED;
         return;
     }
 
-    // Attempt login
     if (do_login(username, password)) {
         _state = RC_AUTH_AUTHENTICATED;
         return;
     }
 
-    // Retry once after delay
-    Serial.println("[RoamCast Auth] Retrying login...");
+    RC_DBG("Auth: Retrying login...");
     delay(LOGIN_RETRY_DELAY_MS);
 
     if (do_login(username, password)) {
@@ -225,7 +208,7 @@ void rc_auth_client_startup(const char* username, const char* password) {
         return;
     }
 
-    Serial.println("[RoamCast Auth] Login failed - entering degraded mode");
+    RC_LOG("Auth: Login failed — degraded mode");
     _state = RC_AUTH_DEGRADED;
 }
 
@@ -236,20 +219,19 @@ void rc_auth_client_loop(const char* username, const char* password) {
     if (now - _last_refresh_check < REFRESH_CHECK_INTERVAL_MS) return;
     _last_refresh_check = now;
 
-    // Check if token needs refresh (REFRESH_BEFORE_EXPIRY_S before expiry)
     struct timeval tv;
     gettimeofday(&tv, NULL);
     unsigned long current_epoch = tv.tv_sec;
 
-    if (_token_expiry_epoch == 0) return;  // No expiry known
+    if (_token_expiry_epoch == 0) return;
 
     if (current_epoch + REFRESH_BEFORE_EXPIRY_S >= _token_expiry_epoch) {
-        Serial.println("[RoamCast Auth] Token expiring soon - refreshing...");
+        RC_LOG("Auth: Token expiring soon — refreshing...");
 
         if (username != nullptr && strlen(username) > 0 && do_login(username, password)) {
-            Serial.println("[RoamCast Auth] Token refreshed");
+            RC_LOG("Auth: Token refreshed");
         } else {
-            Serial.println("[RoamCast Auth] Token refresh failed - entering degraded mode");
+            RC_LOG("Auth: Token refresh failed — degraded mode");
             _state = RC_AUTH_DEGRADED;
         }
     }

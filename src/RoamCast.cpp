@@ -2,6 +2,7 @@
 
 #include "roamcast/RoamCastConfig.h"
 #include "roamcast/RoamCastInternal.h"
+#include "roamcast/RoamCastLog.h"
 #include "roamcast/core/runtime_config.h"
 #include "roamcast/core/wifi_manager.h"
 #include "roamcast/core/auth_client.h"
@@ -76,10 +77,19 @@ void RoamCast::begin(RoamCastConfig cfg) {
     _cfg = cfg;
     _setup_complete = false;
 
-    // 1. Board-level init hook
+    // 1. Board-level init hook (MUST happen first — initializes Serial via M5.begin())
     if (_cfg.board_init) {
         _cfg.board_init();
     }
+
+    // Now Serial is available (M5.begin() initialized it)
+    delay(100);  // Let serial settle
+
+    // Set debug level from config (controls RC_DBG output)
+    roamcast::log::setDebugLevel(_cfg.debug_level);
+
+    RC_LOG("Starting (debug_level=%d, heap=%u)", _cfg.debug_level, ESP.getFreeHeap());
+    RC_DBG("Step 1: Board init DONE");
 
     // 2. Derive device_id from MAC: "{prefix}_{4 MAC bytes hex}"
     uint8_t mac[6];
@@ -87,30 +97,36 @@ void RoamCast::begin(RoamCastConfig cfg) {
     const char* prefix = _cfg.device_id_prefix ? _cfg.device_id_prefix : "roamcast";
     snprintf(_device_id, sizeof(_device_id), "%s_%02X%02X%02X%02X",
              prefix, mac[2], mac[3], mac[4], mac[5]);
-    Serial.printf("Device ID: %s\n", _device_id);
+    RC_LOG("Device ID: %s", _device_id);
 
     // 3. Store config in internal shared state for sub-modules
+    RC_DBG("Step 3: audio_input=%p audio_output=%p indicator=%p button=%p",
+            _cfg.audio_input, _cfg.audio_output, _cfg.status_indicator, _cfg.button);
     roamcast::internal::setCallbacks(
         _cfg.audio_input, _cfg.audio_output,
         _cfg.status_indicator, _cfg.button);
     roamcast::internal::setConfig(&_cfg);
 
     // 4. Initialize runtime config with defaults from config struct
+    RC_DBG("Step 4: Runtime config (server=%s, api=%d, mqtt=%d)",
+            _cfg.server_ip ? _cfg.server_ip : "NULL", _cfg.api_port, _cfg.mqtt_port);
     rc_runtime_config_init(
         _cfg.server_ip,
         _cfg.api_port,
         _cfg.mqtt_port);
 
     // 5. Initialize provisioning (loads NVS or uses config defaults)
+    RC_DBG("Step 5: Provisioning init...");
     rc_provisioning_init(
         _cfg.wifi_ssid, _cfg.wifi_password,
         _cfg.server_ip, _cfg.api_port,
         _cfg.auth_username, _cfg.auth_password,
         _cfg.mqtt_username, _cfg.mqtt_password);
+    RC_DBG("Step 5: Provisioned=%d", rc_provisioning_is_provisioned());
 
     // 6. If not provisioned AND no compile-time WiFi: start captive portal (blocks)
     if (!rc_provisioning_is_provisioned() && _cfg.wifi_ssid == nullptr) {
-        Serial.println("No WiFi credentials configured — starting provisioning portal");
+        RC_LOG("No WiFi credentials — starting provisioning portal");
         const char* ap_name = _cfg.portal_ap_name ? _cfg.portal_ap_name : "RoamCast-Setup";
         rc_provisioning_start_portal(ap_name);  // Blocks until user submits, then reboots
         return;  // Should never reach here after reboot
@@ -118,6 +134,7 @@ void RoamCast::begin(RoamCastConfig cfg) {
 
     // 7. Override runtime config from provisioned values if available
     RcProvisionedConfig prov = rc_provisioning_get_config();
+    RC_DBG("Step 7: Provisioned valid=%d, hub_ip=%s", prov.valid, prov.hub_ip);
     if (prov.valid && strlen(prov.hub_ip) > 0) {
         rc_set_server_ip(prov.hub_ip);
         rc_set_api_port(prov.hub_api_port);
@@ -141,6 +158,7 @@ void RoamCast::begin(RoamCastConfig cfg) {
 #ifdef ROAMCAST_FEATURE_ENCRYPTION
     if (_cfg.features.encryption_enabled) {
         audio_encryption_init();
+        RC_DBG("Step 8: Encryption initialized");
     }
 #endif
 
@@ -149,29 +167,27 @@ void RoamCast::begin(RoamCastConfig cfg) {
     rc_led_set(RC_LED_ORANGE_SOLID);
 
     // 10. Connect to WiFi (blocking)
+    RC_LOG("Connecting to WiFi '%s'...", eff_wifi_ssid ? eff_wifi_ssid : "NULL");
     rc_wifi_init(eff_wifi_ssid, eff_wifi_pass);
     if (!rc_wifi_is_connected()) {
-        Serial.println("WiFi failed - entering error state");
+        RC_LOG("WiFi FAILED — setup incomplete");
         rc_led_set(RC_LED_RED_SOLID);
         return;
     }
+    RC_LOG("WiFi connected — IP: %s, RSSI: %d dBm", rc_wifi_get_ip().c_str(), rc_wifi_get_rssi());
 
     // 11. WiFi connected
     rc_led_set(RC_LED_BLUE_SOLID);
 
     // 12. mDNS discovery if enabled
     if (_cfg.features.mdns_enabled) {
-        bool should_discover = (rc_get_server_ip() == nullptr || strlen(rc_get_server_ip()) == 0);
-        if (!should_discover) {
-            Serial.printf("Hub configured at %s, trying mDNS for updates...\n", rc_get_server_ip());
-        }
         rc_mdns_discovery_init();
         if (rc_mdns_discovery_find_hub(_cfg.mdns_discovery_timeout_ms)) {
-            Serial.printf("Using mDNS-discovered hub: %s:%d\n", rc_get_server_ip(), rc_get_api_port());
-        } else if (should_discover) {
-            Serial.println("mDNS discovery failed and no hub IP configured!");
+            RC_LOG("mDNS: hub at %s (API:%d, MQTT:%d)", rc_get_server_ip(), rc_get_api_port(), rc_get_mqtt_port());
+        } else if (rc_get_server_ip() == nullptr || strlen(rc_get_server_ip()) == 0) {
+            RC_LOG("mDNS: discovery failed, no hub IP configured!");
         } else {
-            Serial.printf("mDNS discovery failed, using configured: %s\n", rc_get_server_ip());
+            RC_LOG("mDNS: discovery failed, using configured %s", rc_get_server_ip());
         }
     }
 
@@ -179,15 +195,20 @@ void RoamCast::begin(RoamCastConfig cfg) {
 #ifdef ROAMCAST_FEATURE_MODULES
     if (_cfg.features.modules_enabled) {
         module_scanner_init(_cfg.i2c_sda_pin, _cfg.i2c_scl_pin, 60000);
+        RC_DBG("Step 13: Module scanner initialized");
     }
 #endif
 
     // 14. Authenticate with hub (probe + JWT login)
+    RC_LOG("Authenticating with hub at %s:%d...", rc_get_server_ip(), rc_get_api_port());
     rc_auth_client_init(_device_id);
     rc_auth_client_startup(eff_auth_user, eff_auth_pass);
+    RC_DBG("Step 14: Auth state=%d", rc_auth_client_get_state());
 
     // 15. Connect to MQTT broker
+    RC_LOG("Connecting to MQTT at %s:%d...", rc_get_server_ip(), rc_get_mqtt_port());
     rc_mqtt_init(_device_id, eff_mqtt_user, eff_mqtt_pass, _cfg.mqtt_reconnect_delay_ms);
+    RC_LOG("MQTT connected: %s", rc_mqtt_is_connected() ? "yes" : "no");
 
     // 16. Set command callback
     rc_mqtt_set_command_callback(RoamCast::_static_command_handler);
@@ -206,6 +227,8 @@ void RoamCast::begin(RoamCastConfig cfg) {
     has_ble = _cfg.features.ble_enabled;
 #endif
 
+    RC_DBG("Step 17: Discovery (speaker=%d, led=%d, duplex=%d, csi=%d, ble=%d)",
+            has_speaker, has_led, full_duplex, has_csi, has_ble);
     rc_mqtt_publish_discovery(
         _cfg.firmware_version, _cfg.hardware_model,
         has_speaker, has_led, has_csi, has_ble, full_duplex,
@@ -213,14 +236,14 @@ void RoamCast::begin(RoamCastConfig cfg) {
     rc_mqtt_publish_capabilities(
         has_speaker, has_led, has_csi, has_ble, full_duplex);
 
-    // 18. Presence sensor init
+    // 18-20. Optional feature init
 #ifdef ROAMCAST_FEATURE_PRESENCE
     if (_cfg.features.presence_enabled) {
         presence_sensor_init();
+        RC_DBG("Step 18: Presence sensor initialized");
     }
 #endif
 
-    // 19. CSI motion init
 #ifdef ROAMCAST_FEATURE_CSI
     if (_cfg.features.csi_enabled) {
         csi_motion_init(
@@ -230,10 +253,10 @@ void RoamCast::begin(RoamCastConfig cfg) {
             _cfg.csi_smoothing_alpha,
             _cfg.csi_history_depth,
             _cfg.csi_motion_max_variance);
+        RC_DBG("Step 19: CSI motion initialized");
     }
 #endif
 
-    // 20. BLE proximity init
 #ifdef ROAMCAST_FEATURE_BLE
     if (_cfg.features.ble_enabled) {
         ble_proximity_init(
@@ -242,10 +265,12 @@ void RoamCast::begin(RoamCastConfig cfg) {
             _cfg.ble_scan_interval_ms,
             _cfg.ble_scan_window_ms,
             _cfg.ble_rssi_smoothing_alpha);
+        RC_DBG("Step 20: BLE proximity initialized");
     }
 #endif
 
     // 21. Audio capture init
+    RC_DBG("Step 21: Audio capture init (port=%d)", _cfg.udp_audio_port);
     rc_audio_capture_init(
         _device_id,
         _cfg.udp_audio_port,
@@ -255,6 +280,7 @@ void RoamCast::begin(RoamCastConfig cfg) {
         _cfg.audio_level_report_ms);
 
     // 22. Audio playback init
+    RC_DBG("Step 22: Audio playback init");
     rc_audio_playback_init();
 
     // 23. Start streaming immediately
@@ -267,16 +293,32 @@ void RoamCast::begin(RoamCastConfig cfg) {
     rc_health_reporter_init(_device_id, _cfg.heartbeat_interval_ms);
 
     _setup_complete = true;
-    Serial.println("\nRoamCast setup complete - streaming audio\n");
+    RC_LOG("Setup complete — streaming audio (heap=%u)", ESP.getFreeHeap());
 }
 
 // ---------------------------------------------------------------------------
 // loop()
 // ---------------------------------------------------------------------------
+static unsigned long _last_debug_dump = 0;
+
 void RoamCast::loop() {
     if (!_setup_complete) return;
 
     unsigned long loop_start = micros();
+
+    // Periodic status dump every 10 seconds (debug only)
+    unsigned long now_ms = millis();
+    if (now_ms - _last_debug_dump >= 10000) {
+        _last_debug_dump = now_ms;
+        RC_DBG("LOOP t=%lus | WiFi=%d | MQTT=%d | streaming=%d | playing=%d | heap=%u | loop_max=%luus",
+                now_ms / 1000,
+                rc_wifi_is_connected(),
+                rc_mqtt_is_connected(),
+                rc_audio_capture_is_streaming(),
+                rc_audio_playback_is_playing(),
+                ESP.getFreeHeap(),
+                _loop_max_us);
+    }
 
     // 1. Board-level loop hook
     if (_cfg.board_loop) {
@@ -351,15 +393,15 @@ void RoamCast::loop() {
             if (rc_audio_capture_is_streaming()) {
                 rc_audio_capture_stop();
                 rc_led_set(RC_LED_BLUE_SOLID);
-                Serial.println("Streaming paused (button)");
+                RC_LOG("Streaming paused (button)");
             } else {
                 rc_audio_capture_start();
                 rc_led_set(RC_LED_BLUE_PULSE);
-                Serial.println("Streaming resumed (button)");
+                RC_LOG("Streaming resumed (button)");
             }
         }
         if (_cfg.button->pressedFor && _cfg.button->pressedFor(_cfg.factory_reset_hold_ms)) {
-            Serial.println("Button held — factory reset!");
+            RC_LOG("Button held — factory reset!");
             rc_led_set(RC_LED_RED_SOLID);
             rc_provisioning_factory_reset();
         }
@@ -436,6 +478,10 @@ void RoamCast::_static_command_handler(const char* command, const char* params_j
 // ---------------------------------------------------------------------------
 
 void RoamCast::_on_command(const char* command, const char* params_json) {
+    // Commands always logged — essential for knowing what the hub is sending
+    RC_LOG("Command: %s", command);
+    RC_DBG("Command params: %s", params_json ? params_json : "null");
+
     if (strcmp(command, "set_led") == 0) {
         rc_led_set(RC_LED_GREEN_SOLID);
     }

@@ -142,6 +142,9 @@ struct RoamCastConfig {
 
     // mDNS discovery
     uint32_t mdns_discovery_timeout_ms; // Default: 10000
+
+    // Debug logging (0 = essential only, 1 = verbose debug)
+    uint8_t debug_level;                // Default: 0
 };
 
 // Helper to create a config with sensible defaults
@@ -190,5 +193,6 @@ inline RoamCastConfig roamcast_default_config() {
     cfg.csi_history_depth = 10;
     cfg.csi_motion_max_variance = 500.0f;
     cfg.mdns_discovery_timeout_ms = 10000;
+    cfg.debug_level = 0;
     return cfg;
 }

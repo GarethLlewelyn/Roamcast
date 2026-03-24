@@ -1,4 +1,5 @@
 #include "M5AtomEchoS3R.h"
+#include "../roamcast/RoamCastLog.h"
 #include <M5Unified.h>
 
 // ============================================================
@@ -11,7 +12,11 @@
 // ============================================================
 
 // --- Stored config for deferred speaker init ---
-static RoamCastAudioOutputConfig _spk_cfg = {};
+static RoamCastAudioOutputConfig _spk_cfg = { 16000, 256, 8 };
+
+// Track whether mic/speaker I2S is currently active
+static bool _speaker_active = false;
+static bool _mic_active = false;
 
 // ============================================================
 // Audio Input (Microphone) Callbacks
@@ -21,7 +26,7 @@ static bool mic_init(const RoamCastAudioInputConfig* cfg) {
     auto mic_cfg = M5.Mic.config();
     mic_cfg.sample_rate = cfg->sample_rate;
     mic_cfg.magnification = cfg->magnification;
-    mic_cfg.noise_filter = cfg->noise_filter;
+    mic_cfg.noise_filter_level = cfg->noise_filter;
     mic_cfg.dma_buf_count = cfg->dma_buf_count;
     mic_cfg.dma_buf_len = cfg->dma_buf_len;
     M5.Mic.config(mic_cfg);
@@ -29,22 +34,26 @@ static bool mic_init(const RoamCastAudioInputConfig* cfg) {
 }
 
 static bool mic_begin() {
-    // CRITICAL: shared I2S bus — speaker must stop before mic starts
+    // CRITICAL: shared I2S bus — speaker MUST be ended before mic can start.
+    RC_DBG("mic_begin (mic=%d, spk=%d)", _mic_active, _speaker_active);
     M5.Speaker.end();
-    return M5.Mic.begin();
+    _speaker_active = false;
+    _mic_active = M5.Mic.begin();
+    RC_DBG("mic_begin result=%d", _mic_active);
+    return _mic_active;
 }
 
 static void mic_end() {
+    RC_DBG("mic_end (was=%d)", _mic_active);
     M5.Mic.end();
+    _mic_active = false;
 }
 
 static bool mic_record(int16_t* buffer, size_t samples, uint32_t sample_rate) {
-    // Start async DMA recording. Poll isRecordingDone() for completion.
     return M5.Mic.record(buffer, samples, sample_rate);
 }
 
 static bool mic_is_recording_done() {
-    // M5.Mic.isRecording() returns non-zero while DMA is still active
     return M5.Mic.isRecording() == 0;
 }
 
@@ -66,25 +75,31 @@ static AudioInputCallbacks _mic_cbs = {
 // ============================================================
 
 static bool spk_init(const RoamCastAudioOutputConfig* cfg) {
-    // Store config for later — applied when speaker actually begins
     _spk_cfg = *cfg;
     return true;
 }
 
 static bool spk_begin() {
-    // CRITICAL: shared I2S bus — mic must stop before speaker starts
+    // CRITICAL: shared I2S bus — mic MUST be ended before speaker can start.
+    RC_DBG("spk_begin (mic=%d, spk=%d)", _mic_active, _speaker_active);
     M5.Mic.end();
+    _mic_active = false;
 
     auto spk_cfg = M5.Speaker.config();
-    spk_cfg.sample_rate = _spk_cfg.sample_rate;
-    spk_cfg.dma_buf_len = _spk_cfg.dma_buf_len;
-    spk_cfg.dma_buf_count = _spk_cfg.dma_buf_count;
+    if (_spk_cfg.sample_rate > 0) spk_cfg.sample_rate = _spk_cfg.sample_rate;
+    if (_spk_cfg.dma_buf_len > 0) spk_cfg.dma_buf_len = _spk_cfg.dma_buf_len;
+    if (_spk_cfg.dma_buf_count > 0) spk_cfg.dma_buf_count = _spk_cfg.dma_buf_count;
     M5.Speaker.config(spk_cfg);
-    return M5.Speaker.begin();
+    _speaker_active = M5.Speaker.begin();
+    RC_DBG("spk_begin result=%d (rate=%d)", _speaker_active, _spk_cfg.sample_rate);
+    return _speaker_active;
 }
 
 static void spk_end() {
-    M5.Speaker.end();
+    if (_speaker_active) {
+        M5.Speaker.end();
+        _speaker_active = false;
+    }
 }
 
 static bool spk_play_raw(const int16_t* data, size_t samples, uint32_t sample_rate,
@@ -118,9 +133,7 @@ static AudioOutputCallbacks _spk_cbs = {
 // Status Indicator (LED) Callbacks
 // ============================================================
 
-static void led_init_fn() {
-    // M5.begin() handles LED init — nothing extra needed
-}
+static void led_init_fn() {}
 
 static void led_set_color(uint8_t r, uint8_t g, uint8_t b) {
     M5.Led.setColor(0, r, g, b);
@@ -140,9 +153,7 @@ static StatusIndicatorCallbacks _led_cbs = {
 // Button Callbacks
 // ============================================================
 
-static void btn_init_fn() {
-    // M5.begin() handles button init — nothing extra needed
-}
+static void btn_init_fn() {}
 
 static bool btn_was_clicked() {
     return M5.BtnA.wasClicked();
@@ -165,12 +176,16 @@ static ButtonCallbacks _btn_cbs = {
 static void board_init() {
     auto cfg = M5.config();
     cfg.internal_mic = true;
-    cfg.internal_spk = true;   // Enable hardware; Speaker.end() below gives mic priority
+    cfg.internal_spk = true;   // MUST be true — M5Unified needs this to configure I2S pins/driver
     cfg.serial_baudrate = 115200;
     M5.begin(cfg);
 
-    // Mic starts first — speaker off until playback is requested
+    // Mic and speaker share one I2S bus and cannot coexist.
+    // We enabled internal_spk=true above so M5Unified initializes the I2S
+    // hardware and pin config. Now immediately release the speaker so the
+    // mic can start. spk_begin()/spk_end() manage the switchover later.
     M5.Speaker.end();
+    _speaker_active = false;
 }
 
 static void board_loop() {

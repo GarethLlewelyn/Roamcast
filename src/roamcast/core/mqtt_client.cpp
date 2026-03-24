@@ -2,6 +2,7 @@
 #include "auth_client.h"
 #include "runtime_config.h"
 #include "wifi_manager.h"
+#include "../RoamCastLog.h"
 
 #ifdef ROAMCAST_FEATURE_MODULES
 #include "../features/module_scanner.h"
@@ -59,53 +60,38 @@ static String get_timestamp() {
 }
 
 static void build_capabilities_array(JsonArray& caps) {
-    // Always has audio input
     caps.add("audio_in");
-
-    // Audio output (speaker)
     if (_has_speaker) caps.add("audio_out");
-
-    // LED
     if (_has_led) caps.add("led");
-
-    // Module-based capabilities
 #ifdef ROAMCAST_FEATURE_MODULES
     if (rc_module_scanner_has_module("presence_tmos")) caps.add("presence");
     if (rc_module_scanner_has_module("env_sensor")) caps.add("sensors");
     if (rc_module_scanner_has_module("touch")) caps.add("buttons");
     if (rc_module_scanner_has_module("light_sensor")) caps.add("sensors");
 #endif
-
-    // CSI motion
     if (_has_csi) caps.add("csi_motion");
-
-    // BLE proximity
     if (_has_ble) caps.add("ble_proximity");
-
-    // Full duplex
     if (_is_full_duplex) caps.add("full_duplex");
 }
 
 static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
-    // Parse incoming command
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, payload, length);
     if (err) {
-        Serial.printf("[RoamCast MQTT] JSON parse error: %s\n", err.c_str());
+        RC_LOG("MQTT: JSON parse error: %s", err.c_str());
         return;
     }
 
     const char* command = doc["command"] | "";
-    Serial.printf("[RoamCast MQTT] Command received: %s\n", command);
+    // Command receipt is always logged (essential)
+    RC_LOG("MQTT command: %s", command);
 
-    // Handle built-in commands
     if (strcmp(command, "restart") == 0) {
-        Serial.println("[RoamCast] Restarting...");
+        RC_LOG("Restarting device...");
         delay(500);
         ESP.restart();
     }
 
-    // Delegate to external callback
     if (_command_callback) {
         char params[256];
         if (doc["params"].is<JsonObject>()) {
@@ -126,34 +112,27 @@ static const char* get_mqtt_pass_or_null() {
 }
 
 static void do_connect() {
-    // Build LWT payload
     char lwt_payload[128];
     JsonDocument lwt_doc;
     lwt_doc["state"] = "offline";
     lwt_doc["timestamp"] = get_timestamp();
     serializeJson(lwt_doc, lwt_payload, sizeof(lwt_payload));
 
-    Serial.printf("[RoamCast MQTT] Connecting to broker at %s:%d\n",
-                  rc_get_server_ip(), rc_get_mqtt_port());
+    RC_DBG("MQTT: Connecting to %s:%d...", rc_get_server_ip(), rc_get_mqtt_port());
 
     if (client.connect(_device_id, get_mqtt_user_or_null(), get_mqtt_pass_or_null(),
                        topic_status, 1, true, lwt_payload)) {
-        Serial.println("[RoamCast MQTT] Connected");
-
-        // Subscribe to command topic
+        RC_LOG("MQTT connected to %s:%d", rc_get_server_ip(), rc_get_mqtt_port());
         client.subscribe(topic_command);
 
-        // Publish discovery
         rc_mqtt_publish_discovery(_firmware_version, _hardware_model,
                                   _has_speaker, _has_led,
                                   _has_csi, _has_ble, _is_full_duplex,
                                   _udp_audio_port);
-
-        // Publish capabilities (retained)
         rc_mqtt_publish_capabilities(_has_speaker, _has_led,
                                      _has_csi, _has_ble, _is_full_duplex);
     } else {
-        Serial.printf("[RoamCast MQTT] Connection failed, rc=%d\n", client.state());
+        RC_LOG("MQTT connection failed (rc=%d)", client.state());
     }
 }
 
@@ -162,7 +141,6 @@ void rc_mqtt_init(const char* device_id, const char* mqtt_user, const char* mqtt
     _device_id = device_id;
     _reconnect_delay_ms = reconnect_delay_ms;
 
-    // Store MQTT credentials
     if (mqtt_user && strlen(mqtt_user) > 0) {
         strncpy(_mqtt_user, mqtt_user, sizeof(_mqtt_user) - 1);
         _mqtt_user[sizeof(_mqtt_user) - 1] = '\0';
@@ -179,7 +157,6 @@ void rc_mqtt_init(const char* device_id, const char* mqtt_user, const char* mqtt
         _has_mqtt_creds = false;
     }
 
-    // Build topic strings
     snprintf(topic_discovery, sizeof(topic_discovery),
              "satellite/devices/discovery");
     snprintf(topic_status, sizeof(topic_status),
@@ -203,7 +180,9 @@ void rc_mqtt_init(const char* device_id, const char* mqtt_user, const char* mqtt
 
     client.setServer(rc_get_server_ip(), rc_get_mqtt_port());
     client.setCallback(mqtt_callback);
-    client.setBufferSize(2560);  // Increased for enriched CSI payload (~2KB with 64 subcarriers)
+    client.setBufferSize(2560);
+
+    do_connect();
 }
 
 void rc_mqtt_loop() {
@@ -211,7 +190,7 @@ void rc_mqtt_loop() {
         unsigned long now = millis();
         if (now - last_reconnect_attempt >= _reconnect_delay_ms) {
             last_reconnect_attempt = now;
-            Serial.println("[RoamCast MQTT] Reconnecting...");
+            RC_LOG("MQTT reconnecting to %s:%d...", rc_get_server_ip(), rc_get_mqtt_port());
             do_connect();
         }
         return;
@@ -227,7 +206,6 @@ void rc_mqtt_publish_discovery(const char* firmware_version, const char* hardwar
                                bool has_speaker, bool has_led,
                                bool has_csi, bool has_ble, bool is_full_duplex,
                                uint16_t udp_audio_port) {
-    // Store parameters for reconnect
     strncpy(_firmware_version, firmware_version ? firmware_version : "0.0.0",
             sizeof(_firmware_version) - 1);
     _firmware_version[sizeof(_firmware_version) - 1] = '\0';
@@ -259,12 +237,11 @@ void rc_mqtt_publish_discovery(const char* firmware_version, const char* hardwar
     char buffer[512];
     serializeJson(doc, buffer, sizeof(buffer));
     client.publish(topic_discovery, buffer);
-    Serial.printf("[RoamCast MQTT] Published discovery: %s\n", _device_id);
+    RC_DBG("MQTT: Published discovery for %s", _device_id);
 }
 
 void rc_mqtt_publish_capabilities(bool has_speaker, bool has_led,
                                    bool has_csi, bool has_ble, bool is_full_duplex) {
-    // Update stored flags
     _has_speaker = has_speaker;
     _has_led = has_led;
     _has_csi = has_csi;
@@ -330,19 +307,19 @@ void rc_mqtt_publish_audio_level(float rms, float peak, bool is_speech) {
 }
 
 void rc_mqtt_publish_modules(const char* modules_json) {
-    client.publish(topic_modules, modules_json, true);  // retained
+    client.publish(topic_modules, modules_json, true);
 }
 
 void rc_mqtt_publish_presence(const char* presence_json) {
-    client.publish(topic_presence, presence_json);  // NOT retained
+    client.publish(topic_presence, presence_json);
 }
 
 void rc_mqtt_publish_csi_motion(const char* csi_json) {
-    client.publish(topic_csi_motion, csi_json);  // NOT retained
+    client.publish(topic_csi_motion, csi_json);
 }
 
 void rc_mqtt_publish_ble_proximity(const char* ble_json) {
-    client.publish(topic_ble_proximity, ble_json);  // NOT retained
+    client.publish(topic_ble_proximity, ble_json);
 }
 
 void rc_mqtt_set_command_callback(rc_mqtt_command_callback_t cb) {

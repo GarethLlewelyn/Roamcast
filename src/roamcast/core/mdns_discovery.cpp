@@ -1,5 +1,6 @@
 #include "mdns_discovery.h"
 #include "runtime_config.h"
+#include "../RoamCastLog.h"
 
 #include <ESPmDNS.h>
 
@@ -9,17 +10,17 @@ void rc_mdns_discovery_init() {
     if (_initialized) return;
 
     if (!MDNS.begin("satellite-device")) {
-        Serial.println("[RoamCast mDNS] Failed to start responder");
+        RC_LOG("mDNS: Failed to start responder");
         return;
     }
     _initialized = true;
-    Serial.println("[RoamCast mDNS] Responder started");
+    RC_DBG("mDNS: Responder started");
 }
 
 bool rc_mdns_discovery_find_hub(uint32_t timeout_ms) {
     if (!_initialized) return false;
 
-    Serial.println("[RoamCast mDNS] Searching for _audiocombine._tcp ...");
+    RC_DBG("mDNS: Searching for _audiocombine._tcp...");
 
     unsigned long start = millis();
     while (millis() - start < timeout_ms) {
@@ -40,13 +41,14 @@ bool rc_mdns_discovery_find_hub(uint32_t timeout_ms) {
                 rc_set_mqtt_port((uint16_t)mqtt_txt.toInt());
             }
 
-            Serial.printf("[RoamCast mDNS] Hub found at %s (API:%d, MQTT:%d)\n",
-                          rc_get_server_ip(), rc_get_api_port(), rc_get_mqtt_port());
+            // Always log hub discovery (essential network info)
+            RC_LOG("mDNS: Hub found at %s (API:%d, MQTT:%d)",
+                    rc_get_server_ip(), rc_get_api_port(), rc_get_mqtt_port());
             return true;
         }
         delay(1000);
     }
 
-    Serial.println("[RoamCast mDNS] No hub found within timeout");
+    RC_LOG("mDNS: No hub found within %dms timeout", timeout_ms);
     return false;
 }

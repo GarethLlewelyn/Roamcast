@@ -2,6 +2,7 @@
 #include "audio_capture.h"
 #include "../led/led_controller.h"
 #include "../RoamCastInternal.h"
+#include "../RoamCastLog.h"
 
 #include <WiFiUdp.h>
 #include <math.h>
@@ -99,11 +100,13 @@ void rc_audio_playback_init() {
     if (cfg) {
         _tts_udp_port = cfg->tts_udp_port;
     }
+    auto* output = roamcast::internal::getAudioOutput();
+    RC_DBG("Playback: init (speaker=%d, tts_port=%d)", roamcast::internal::hasSpeaker(), _tts_udp_port);
 }
 
 void rc_audio_playback_set_volume(uint8_t volume) {
     speaker_volume = volume;
-    Serial.printf("[RoamCast] Speaker volume set to %d\n", volume);
+    RC_DBG("Speaker volume=%d", volume);
 }
 
 uint8_t rc_audio_playback_get_volume() {
@@ -115,19 +118,25 @@ bool rc_audio_playback_is_playing() {
 }
 
 void rc_audio_playback_play_tone(uint16_t freq_hz, uint16_t duration_ms_arg) {
-    if (!roamcast::internal::hasSpeaker()) return;
-    if (pb_state != PB_IDLE) return;
+    RC_DBG("Playback: play_tone freq=%d dur=%d state=%d", freq_hz, duration_ms_arg, pb_state);
+    if (!roamcast::internal::hasSpeaker()) {
+        RC_DBG("Playback: play_tone rejected — no speaker");
+        return;
+    }
+    if (pb_state != PB_IDLE) {
+        RC_DBG("Playback: play_tone rejected — busy (state=%d)", pb_state);
+        return;
+    }
     tone_freq = freq_hz;
     tone_duration_ms = min((uint16_t)1000, duration_ms_arg);
     pb_state = PB_STARTING_SPEAKER;
-    Serial.printf("[RoamCast] Play tone: %d Hz, %d ms\n", freq_hz, tone_duration_ms);
 }
 
 void rc_audio_playback_tts_start() {
     if (!roamcast::internal::hasSpeaker()) return;
     if (pb_state != PB_IDLE) return;
     pb_state = PB_TTS_STARTING;
-    Serial.println("[RoamCast] TTS start requested");
+    RC_LOG("TTS start requested");
 }
 
 bool rc_audio_playback_tts_active() {
@@ -139,14 +148,14 @@ void rc_audio_playback_music_start() {
     if (pb_state != PB_IDLE) return;
     music_mode = true;
     pb_state = PB_TTS_STARTING;
-    Serial.println("[RoamCast] Music start requested (30s timeout)");
+    RC_LOG("Music start requested");
 }
 
 void rc_audio_playback_music_stop() {
     music_mode = false;
     if (pb_state == PB_TTS_ACTIVE || pb_state == PB_TTS_STARTING) {
         pb_state = PB_TTS_STOPPING;
-        Serial.println("[RoamCast] Music stop requested");
+        RC_LOG("Music stop requested");
     }
 }
 
@@ -170,8 +179,11 @@ void rc_audio_playback_music_flush() {
     output->begin();
     output->setVolume(speaker_volume);
 
-    Serial.println("[RoamCast] Music flush: cleared speaker queue + receive buffer");
+    RC_DBG("Music flush: cleared buffers");
 }
+
+// Periodic playback state log
+static unsigned long _last_pb_diag_ms = 0;
 
 void rc_audio_playback_loop() {
     // No speaker = nothing to do
@@ -183,6 +195,16 @@ void rc_audio_playback_loop() {
 
     bool full_duplex = roamcast::internal::isFullDuplex();
 
+    // Periodic playback state dump every 10s (only when not idle)
+    if (pb_state != PB_IDLE) {
+        unsigned long pb_now = millis();
+        if (pb_now - _last_pb_diag_ms >= 5000) {
+            _last_pb_diag_ms = pb_now;
+            RC_DBG("Playback: state=%d isPlaying=%d duplex=%d music=%d",
+                    pb_state, output->isPlaying(), full_duplex, music_mode);
+        }
+    }
+
     switch (pb_state) {
         case PB_IDLE:
             break;
@@ -190,6 +212,7 @@ void rc_audio_playback_loop() {
         // ===== Tone playback states =====
 
         case PB_STARTING_SPEAKER: {
+            RC_DBG("Playback: PB_STARTING_SPEAKER");
             was_streaming = rc_audio_capture_is_streaming();
             prev_led_state = rc_led_get_state();
 
@@ -203,8 +226,11 @@ void rc_audio_playback_loop() {
 
             rc_led_set(RC_LED_GREEN_FLASH);
 
-            output->begin();
+            RoamCastAudioOutputConfig tone_out_cfg = { TONE_SAMPLE_RATE, 256, 8 };
+            bool init_ok = output->init(&tone_out_cfg);
+            bool begin_ok = output->begin();
             output->setVolume(speaker_volume);
+            RC_DBG("Playback: speaker init=%d begin=%d vol=%d", init_ok, begin_ok, speaker_volume);
 
             uint32_t num_samples = ((uint32_t)TONE_SAMPLE_RATE * tone_duration_ms) / 1000;
             if (num_samples > MAX_TONE_SAMPLES) num_samples = MAX_TONE_SAMPLES;
@@ -214,16 +240,17 @@ void rc_audio_playback_loop() {
                 tone_buffer[i] = (int16_t)(sinf(2.0f * M_PI * tone_freq * t) * 16000);
             }
 
-            output->playRaw(tone_buffer, num_samples, TONE_SAMPLE_RATE, false, 1, 1, true);
+            bool play_ok = output->playRaw(tone_buffer, num_samples, TONE_SAMPLE_RATE, false, 1, 1, true);
             play_start_ms = millis();
             pb_state = PB_PLAYING;
-            Serial.println("[RoamCast] Speaker started, playing tone");
+            RC_DBG("Playback: playRaw=%d samples=%u", play_ok, num_samples);
             break;
         }
 
         case PB_PLAYING:
             if (!output->isPlaying() ||
                 (millis() - play_start_ms > tone_duration_ms + 200)) {
+                RC_DBG("Playback: tone done (elapsed=%lu)", millis() - play_start_ms);
                 pb_state = PB_STOPPING_SPEAKER;
             }
             break;
@@ -247,18 +274,19 @@ void rc_audio_playback_loop() {
             } else {
                 pb_state = PB_RESTARTING_MIC;
             }
-            Serial.println("[RoamCast] Speaker stopped");
+            RC_DBG("Playback: speaker stopped");
             break;
 
         case PB_RESTARTING_MIC:
             restart_mic_and_streaming();
             pb_state = PB_IDLE;
-            Serial.println("[RoamCast] Mic restarted, playback complete");
+            RC_DBG("Playback: mic restarted, complete");
             break;
 
         // ===== TTS / Music playback states =====
 
         case PB_TTS_STARTING: {
+            RC_DBG("Playback: TTS starting...");
             was_streaming = rc_audio_capture_is_streaming();
             prev_led_state = rc_led_get_state();
 
@@ -272,13 +300,12 @@ void rc_audio_playback_loop() {
 
             rc_led_set(RC_LED_GREEN_FLASH);
 
-            // Configure and start speaker for streaming
             RoamCastAudioOutputConfig out_cfg = { AUDIO_SAMPLE_RATE, 256, 8 };
-            output->init(&out_cfg);
-            output->begin();
+            bool init_ok = output->init(&out_cfg);
+            bool begin_ok = output->begin();
             output->setVolume(speaker_volume);
+            RC_DBG("Playback: TTS speaker init=%d begin=%d vol=%d", init_ok, begin_ok, speaker_volume);
 
-            // Start UDP listener for TTS/music audio from hub
             tts_udp.begin(_tts_udp_port);
             tts_udp_started = true;
 
@@ -288,7 +315,7 @@ void rc_audio_playback_loop() {
             tts_last_packet_ms = millis();
 
             pb_state = PB_TTS_ACTIVE;
-            Serial.printf("[RoamCast] TTS active, listening on UDP port %d\n", _tts_udp_port);
+            RC_DBG("Playback: TTS active on UDP %d", _tts_udp_port);
             break;
         }
 
@@ -350,8 +377,7 @@ void rc_audio_playback_loop() {
             // Timeout check
             unsigned long timeout = music_mode ? MUSIC_TIMEOUT_MS : TTS_TIMEOUT_MS;
             if (millis() - tts_last_packet_ms > timeout) {
-                Serial.printf("[RoamCast] %s timeout, no packets for %lu ms\n",
-                    music_mode ? "Music" : "TTS", timeout);
+                RC_LOG("%s timeout (%lu ms)", music_mode ? "Music" : "TTS", timeout);
                 pb_state = PB_TTS_STOPPING;
             }
             break;
@@ -377,7 +403,7 @@ void rc_audio_playback_loop() {
                 } else {
                     pb_state = PB_RESTARTING_MIC;
                 }
-                Serial.println("[RoamCast] TTS playback stopped");
+                RC_DBG("Playback: TTS stopped");
             }
             break;
     }

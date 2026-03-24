@@ -1,5 +1,6 @@
 #include "provisioning.h"
 #include "runtime_config.h"
+#include "../RoamCastLog.h"
 
 #include <Preferences.h>
 #include <WiFi.h>
@@ -98,7 +99,7 @@ void rc_provisioning_init(const char* default_ssid, const char* default_pass,
         _prefs.getString("muser", _config.mqtt_username, sizeof(_config.mqtt_username));
         _prefs.getString("mpass", _config.mqtt_password, sizeof(_config.mqtt_password));
         _config.valid = true;
-        Serial.println("[RoamCast] Provisioning: loaded NVS credentials");
+        RC_DBG("Provisioning: loaded NVS credentials");
     } else {
         // Fall back to defaults passed in via init parameters
         safe_copy(_config.wifi_ssid, _default_ssid, sizeof(_config.wifi_ssid));
@@ -110,7 +111,7 @@ void rc_provisioning_init(const char* default_ssid, const char* default_pass,
         safe_copy(_config.mqtt_username, _default_mqtt_user, sizeof(_config.mqtt_username));
         safe_copy(_config.mqtt_password, _default_mqtt_pass, sizeof(_config.mqtt_password));
         _config.valid = (strlen(_default_ssid) > 0);
-        Serial.println("[RoamCast] Provisioning: using provided defaults");
+        RC_DBG("Provisioning: using provided defaults");
     }
 
     _prefs.end();
@@ -125,7 +126,7 @@ RcProvisionedConfig rc_provisioning_get_config() {
 }
 
 bool rc_provisioning_start_portal(const char* ap_name) {
-    Serial.println("[RoamCast] Starting provisioning captive portal...");
+    RC_LOG("Starting provisioning captive portal...");
 
     // Start AP
     WiFi.mode(WIFI_AP);
@@ -133,7 +134,7 @@ bool rc_provisioning_start_portal(const char* ap_name) {
     delay(500);
 
     IPAddress apIP = WiFi.softAPIP();
-    Serial.printf("[RoamCast] AP IP: %s\n", apIP.toString().c_str());
+    RC_LOG("Portal AP IP: %s", apIP.toString().c_str());
 
     // DNS server for captive portal (redirect all to AP IP)
     DNSServer dnsServer;
@@ -164,7 +165,7 @@ bool rc_provisioning_start_portal(const char* ap_name) {
 
         server.send(200, "text/html", SAVE_HTML);
         saved = true;
-        Serial.println("[RoamCast] Provisioning: credentials saved to NVS");
+        RC_LOG("Provisioning: credentials saved");
     });
 
     // Catch-all for captive portal detection
@@ -189,7 +190,7 @@ bool rc_provisioning_start_portal(const char* ap_name) {
     dnsServer.stop();
     WiFi.softAPdisconnect(true);
 
-    Serial.println("[RoamCast] Provisioning complete. Rebooting...");
+    RC_LOG("Provisioning complete — rebooting...");
     delay(1000);
     ESP.restart();
 
@@ -197,12 +198,12 @@ bool rc_provisioning_start_portal(const char* ap_name) {
 }
 
 void rc_provisioning_factory_reset() {
-    Serial.println("[RoamCast] Factory reset: clearing NVS provisioning data...");
+    RC_LOG("Factory reset: clearing NVS...");
     Preferences prefs;
     prefs.begin("sat_prov", false);
     prefs.clear();
     prefs.end();
-    Serial.println("[RoamCast] NVS cleared. Rebooting into provisioning mode...");
+    RC_LOG("NVS cleared — rebooting into provisioning mode...");
     delay(1000);
     ESP.restart();
 }
