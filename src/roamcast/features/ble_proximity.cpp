@@ -9,7 +9,6 @@
 
 #include <NimBLEDevice.h>
 
-// --- iBeacon constants ---
 #define IBEACON_COMPANY_ID   0x004C  // Apple
 #define IBEACON_TYPE         0x02
 #define IBEACON_DATA_LEN     0x15    // 21 bytes after type+length
@@ -22,14 +21,12 @@ struct IBeaconData {
     bool valid;
 };
 
-// --- Config (stored from init parameters) ---
 static uint16_t _cfg_publish_interval_ms = 500;
 static uint32_t _cfg_stale_timeout_ms = 10000;
 static uint16_t _cfg_scan_interval_ms = 500;
 static uint16_t _cfg_scan_window_ms = 200;
 static float _cfg_rssi_smoothing_alpha = 0.3f;
 
-// --- Static state ---
 static bool _available = false;
 static BleTarget _targets[BLE_MAX_TARGETS] = {};
 static int _target_count = 0;
@@ -40,7 +37,6 @@ static int _result_count = 0;
 static unsigned long _last_publish_ms = 0;
 static NimBLEScan* _scan = nullptr;
 
-// --- Timestamp helper ---
 static String _get_timestamp() {
     struct tm timeinfo;
     if (getLocalTime(&timeinfo, 100)) {
@@ -51,7 +47,6 @@ static String _get_timestamp() {
     return String("1970-01-01T00:00:00Z");
 }
 
-// --- Case-insensitive substring search ---
 static bool _strcasestr(const char* haystack, const char* needle) {
     if (!haystack || !needle || needle[0] == '\0') return false;
     size_t hay_len = strlen(haystack);
@@ -71,7 +66,6 @@ static bool _strcasestr(const char* haystack, const char* needle) {
     return false;
 }
 
-// --- UUID helpers ---
 static uint8_t _hex_nibble(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -102,7 +96,6 @@ static void _uuid_to_str(const uint8_t* uuid, char* out, size_t out_len) {
         uuid[12], uuid[13], uuid[14], uuid[15]);
 }
 
-// --- iBeacon parser ---
 static IBeaconData _parse_ibeacon(const std::string& mfr_data) {
     IBeaconData result = {};
     result.valid = false;
@@ -139,7 +132,6 @@ static IBeaconData _parse_ibeacon(const std::string& mfr_data) {
     return result;
 }
 
-// --- Find or create result slot for a target ---
 static int _find_or_create_result(const char* target_id) {
     // Find existing
     for (int i = 0; i < _result_count; i++) {
@@ -157,7 +149,6 @@ static int _find_or_create_result(const char* target_id) {
     return -1; // No space
 }
 
-// --- Median helper for small arrays ---
 static int8_t _median(int8_t* arr, int count) {
     // Simple insertion sort + pick middle (count is small, max 8)
     int8_t sorted[8];
@@ -174,7 +165,6 @@ static int8_t _median(int8_t* arr, int count) {
     return sorted[count / 2];
 }
 
-// --- Accumulate raw RSSI samples (median computed at publish time) ---
 static void _update_rssi(int idx, int8_t rssi) {
     _results[idx].rssi = rssi;
     _results[idx].last_seen_ms = millis();
@@ -186,7 +176,6 @@ static void _update_rssi(int idx, int8_t rssi) {
     }
 }
 
-// --- Check if a discovered device matches any name-based target ---
 static void _check_device(const char* device_name, int8_t rssi) {
     if (!device_name || device_name[0] == '\0') return;
 
@@ -204,7 +193,6 @@ static void _check_device(const char* device_name, int8_t rssi) {
     }
 }
 
-// --- Check if an iBeacon matches any iBeacon-type target ---
 static void _check_ibeacon(const IBeaconData& beacon, int8_t rssi) {
     for (int t = 0; t < _target_count; t++) {
         if (!_targets[t].active || _targets[t].match_type != 1) continue;
@@ -241,7 +229,6 @@ static void _check_ibeacon(const IBeaconData& beacon, int8_t rssi) {
     }
 }
 
-// --- Scan callback ---
 class BleProximityScanCallbacks : public NimBLEAdvertisedDeviceCallbacks {
     void onResult(NimBLEAdvertisedDevice* device) override {
         int8_t rssi = device->getRSSI();
@@ -250,22 +237,14 @@ class BleProximityScanCallbacks : public NimBLEAdvertisedDeviceCallbacks {
         if (device->haveName()) {
             std::string name = device->getName();
             if (!name.empty()) {
-                if (_target_count > 0) {
-                    Serial.printf("BLE scan: \"%s\" RSSI=%d\n", name.c_str(), rssi);
-                }
                 _check_device(name.c_str(), rssi);
             }
         }
 
-        // Check iBeacon targets (manufacturer data)
         if (device->haveManufacturerData()) {
             std::string mfr = device->getManufacturerData();
             IBeaconData beacon = _parse_ibeacon(mfr);
             if (beacon.valid) {
-                char uuid_str[37];
-                _uuid_to_str(beacon.uuid, uuid_str, sizeof(uuid_str));
-                Serial.printf("BLE scan: iBeacon uuid=%s major=%u minor=%u tx=%d RSSI=%d\n",
-                              uuid_str, beacon.major, beacon.minor, beacon.tx_power, rssi);
                 _check_ibeacon(beacon, rssi);
             }
         }
@@ -274,7 +253,6 @@ class BleProximityScanCallbacks : public NimBLEAdvertisedDeviceCallbacks {
 
 static BleProximityScanCallbacks _scan_callbacks;
 
-// --- Mark stale results ---
 static void _update_stale() {
     unsigned long now = millis();
     for (int i = 0; i < _result_count; i++) {
@@ -284,7 +262,6 @@ static void _update_stale() {
     }
 }
 
-// --- Publish to MQTT ---
 static void _publish_ble_proximity() {
     JsonDocument doc;
     JsonArray targets = doc["targets"].to<JsonArray>();
@@ -323,8 +300,6 @@ static void _publish_ble_proximity() {
     _last_publish_ms = millis();
 }
 
-// --- Public API ---
-
 void ble_proximity_init(uint16_t publish_interval_ms, uint32_t stale_timeout_ms,
                         uint16_t scan_interval_ms, uint16_t scan_window_ms,
                         float rssi_smoothing_alpha) {
@@ -334,39 +309,27 @@ void ble_proximity_init(uint16_t publish_interval_ms, uint32_t stale_timeout_ms,
     _cfg_scan_window_ms = scan_window_ms;
     _cfg_rssi_smoothing_alpha = rssi_smoothing_alpha;
 
-    if (_target_count == 0) {
-        Serial.println("BLE proximity: initialized (no targets configured yet)");
-    }
-
     NimBLEDevice::init("");
 
-    // Configure scan -- observer only, active scan, low duty cycle
     _scan = NimBLEDevice::getScan();
     _scan->setAdvertisedDeviceCallbacks(&_scan_callbacks, false);
-    _scan->setActiveScan(true);   // Active scan -- sends SCAN_REQ to get device names (required for iOS)
-    _scan->setInterval((uint16_t)(_cfg_scan_interval_ms * 1000 / 625));  // Convert ms to 0.625ms units
-    _scan->setWindow((uint16_t)(_cfg_scan_window_ms * 1000 / 625));      // Convert ms to 0.625ms units
-    _scan->setDuplicateFilter(false);  // Allow duplicate adverts to update RSSI
-    _scan->setMaxResults(0);  // Don't store results -- we process in callback
+    _scan->setActiveScan(true);
+    _scan->setInterval((uint16_t)(_cfg_scan_interval_ms * 1000 / 625));
+    _scan->setWindow((uint16_t)(_cfg_scan_window_ms * 1000 / 625));
+    _scan->setDuplicateFilter(false);
+    _scan->setMaxResults(0);
 
-    // Start continuous background scan
-    _scan->start(0, nullptr, false);  // 0 = scan forever, nullptr = no completion callback
+    _scan->start(0, nullptr, false);
 
     _available = true;
-    Serial.println("BLE proximity: initialized (name + iBeacon matching)");
-    Serial.printf("  Scan interval: %dms, window: %dms\n", _cfg_scan_interval_ms, _cfg_scan_window_ms);
-    Serial.printf("  Stale timeout: %dms, publish interval: %dms\n", (int)_cfg_stale_timeout_ms, _cfg_publish_interval_ms);
-    Serial.printf("  RSSI smoothing alpha: %.2f\n", _cfg_rssi_smoothing_alpha);
 }
 
 void ble_proximity_loop() {
     if (!_available) return;
     if (_target_count == 0) return;
 
-    // Update stale status
     _update_stale();
 
-    // Publish at configured interval
     unsigned long now = millis();
     if (now - _last_publish_ms >= _cfg_publish_interval_ms) {
         if (rc_mqtt_is_connected()) {
@@ -396,9 +359,8 @@ void ble_proximity_set_targets(const char* targets_json) {
         const char* match_type = obj["match_type"] | "name";
 
         if (strcmp(match_type, "ibeacon") == 0) {
-            // iBeacon UUID-based target
             const char* uuid_str = obj["ibeacon_uuid"] | "";
-            if (strlen(uuid_str) < 32) continue;  // Invalid UUID
+            if (strlen(uuid_str) < 32) continue;
 
             if (!_parse_uuid_string(uuid_str, _targets[_target_count].ibeacon_uuid)) {
                 Serial.printf("BLE proximity: invalid UUID: %s\n", uuid_str);
@@ -411,7 +373,6 @@ void ble_proximity_set_targets(const char* targets_json) {
             _targets[_target_count].active = true;
             _target_count++;
         } else {
-            // Name-pattern target (backward compatible default)
             const char* name = obj["name_pattern"] | "";
             if (strlen(name) > 0) {
                 strncpy(_targets[_target_count].name_pattern, name,
@@ -423,22 +384,8 @@ void ble_proximity_set_targets(const char* targets_json) {
         }
     }
 
-    // Clear stale results that don't match new targets
     _result_count = 0;
 
-    Serial.printf("BLE proximity: %d targets configured\n", _target_count);
-    for (int i = 0; i < _target_count; i++) {
-        if (_targets[i].match_type == 1) {
-            char uuid_str[37];
-            _uuid_to_str(_targets[i].ibeacon_uuid, uuid_str, sizeof(uuid_str));
-            Serial.printf("  [%d] ibeacon uuid=%s major=%u minor=%u\n",
-                          i, uuid_str, _targets[i].ibeacon_major, _targets[i].ibeacon_minor);
-        } else {
-            Serial.printf("  [%d] name_pattern=\"%s\"\n", i, _targets[i].name_pattern);
-        }
-    }
-
-    // Restart scan if it was stopped
     if (_available && _scan && !_scan->isScanning()) {
         _scan->start(0, false);
     }

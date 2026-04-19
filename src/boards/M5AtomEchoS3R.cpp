@@ -1,26 +1,13 @@
 #include "M5AtomEchoS3R.h"
-#include "../roamcast/RoamCastLog.h"
 #include <M5Unified.h>
 
-// ============================================================
-// M5Stack Atom EchoS3R Board Preset
-//
-// Wraps M5Unified API into RoamCast callback structs.
-// Half-duplex: mic and speaker share one I2S bus and cannot
-// coexist. The library's playback state machine handles the
-// mic-stop / speaker-start / speaker-stop / mic-restart cycle.
-// ============================================================
+// M5 Atom Echo S3R board preset (M5Unified). Mic and speaker share one I2S bus (half-duplex).
 
-// --- Stored config for deferred speaker init ---
 static RoamCastAudioOutputConfig _spk_cfg = { 16000, 256, 8 };
 
 // Track whether mic/speaker I2S is currently active
 static bool _speaker_active = false;
 static bool _mic_active = false;
-
-// ============================================================
-// Audio Input (Microphone) Callbacks
-// ============================================================
 
 static bool mic_init(const RoamCastAudioInputConfig* cfg) {
     auto mic_cfg = M5.Mic.config();
@@ -34,17 +21,13 @@ static bool mic_init(const RoamCastAudioInputConfig* cfg) {
 }
 
 static bool mic_begin() {
-    // CRITICAL: shared I2S bus — speaker MUST be ended before mic can start.
-    RC_DBG("mic_begin (mic=%d, spk=%d)", _mic_active, _speaker_active);
     M5.Speaker.end();
     _speaker_active = false;
     _mic_active = M5.Mic.begin();
-    RC_DBG("mic_begin result=%d", _mic_active);
     return _mic_active;
 }
 
 static void mic_end() {
-    RC_DBG("mic_end (was=%d)", _mic_active);
     M5.Mic.end();
     _mic_active = false;
 }
@@ -70,18 +53,12 @@ static AudioInputCallbacks _mic_cbs = {
     mic_is_full_duplex
 };
 
-// ============================================================
-// Audio Output (Speaker) Callbacks
-// ============================================================
-
 static bool spk_init(const RoamCastAudioOutputConfig* cfg) {
     _spk_cfg = *cfg;
     return true;
 }
 
 static bool spk_begin() {
-    // CRITICAL: shared I2S bus — mic MUST be ended before speaker can start.
-    RC_DBG("spk_begin (mic=%d, spk=%d)", _mic_active, _speaker_active);
     M5.Mic.end();
     _mic_active = false;
 
@@ -91,7 +68,6 @@ static bool spk_begin() {
     if (_spk_cfg.dma_buf_count > 0) spk_cfg.dma_buf_count = _spk_cfg.dma_buf_count;
     M5.Speaker.config(spk_cfg);
     _speaker_active = M5.Speaker.begin();
-    RC_DBG("spk_begin result=%d (rate=%d)", _speaker_active, _spk_cfg.sample_rate);
     return _speaker_active;
 }
 
@@ -129,10 +105,6 @@ static AudioOutputCallbacks _spk_cbs = {
     spk_set_volume
 };
 
-// ============================================================
-// Status Indicator (LED) Callbacks
-// ============================================================
-
 static void led_init_fn() {}
 
 static void led_set_color(uint8_t r, uint8_t g, uint8_t b) {
@@ -148,10 +120,6 @@ static StatusIndicatorCallbacks _led_cbs = {
     led_set_color,
     led_off
 };
-
-// ============================================================
-// Button Callbacks
-// ============================================================
 
 static void btn_init_fn() {}
 
@@ -169,21 +137,13 @@ static ButtonCallbacks _btn_cbs = {
     btn_pressed_for
 };
 
-// ============================================================
-// Board Lifecycle
-// ============================================================
-
 static void board_init() {
     auto cfg = M5.config();
     cfg.internal_mic = true;
-    cfg.internal_spk = true;   // MUST be true — M5Unified needs this to configure I2S pins/driver
+    cfg.internal_spk = true;
     cfg.serial_baudrate = 115200;
     M5.begin(cfg);
 
-    // Mic and speaker share one I2S bus and cannot coexist.
-    // We enabled internal_spk=true above so M5Unified initializes the I2S
-    // hardware and pin config. Now immediately release the speaker so the
-    // mic can start. spk_begin()/spk_end() manage the switchover later.
     M5.Speaker.end();
     _speaker_active = false;
 }
@@ -192,37 +152,27 @@ static void board_loop() {
     M5.update();
 }
 
-// ============================================================
-// Public: config()
-// ============================================================
-
 RoamCastConfig M5AtomEchoS3R::config() {
     RoamCastConfig cfg = roamcast_default_config();
 
-    // Device identity
     cfg.hardware_model   = "atom_echo_s3r";
     cfg.device_id_prefix = "echo_s3r";
     cfg.firmware_version = "1.4.0";
 
-    // Hardware callbacks
     cfg.audio_input      = &_mic_cbs;
     cfg.audio_output     = &_spk_cbs;
     cfg.status_indicator = &_led_cbs;
     cfg.button           = &_btn_cbs;
 
-    // Board lifecycle
     cfg.board_init       = board_init;
     cfg.board_loop       = board_loop;
 
-    // All features enabled (the Atom EchoS3R has everything)
     cfg.features.ble_enabled        = true;
-    cfg.features.csi_enabled        = true;
     cfg.features.encryption_enabled = true;
     cfg.features.modules_enabled    = true;
     cfg.features.presence_enabled   = true;
     cfg.features.mdns_enabled       = true;
 
-    // I2C Grove port pins
     cfg.i2c_sda_pin = 2;
     cfg.i2c_scl_pin = 1;
 

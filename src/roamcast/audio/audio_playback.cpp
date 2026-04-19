@@ -12,7 +12,6 @@
 #define AUDIO_FRAME_SAMPLES 320
 #define AUDIO_FRAME_BYTES   640
 
-// --- State machine ---
 enum PlaybackState {
     PB_IDLE,
     PB_STARTING_SPEAKER,
@@ -42,15 +41,13 @@ static WiFiUDP tts_udp;
 static bool tts_udp_started = false;
 static uint16_t _tts_udp_port = 5101;
 
-// --- Receive ring buffer ---
 #define RX_RING_FRAMES 16
 #define TTS_FRAME_SAMPLES AUDIO_FRAME_SAMPLES  // 320
 static int16_t rx_ring_buffer[RX_RING_FRAMES * TTS_FRAME_SAMPLES];
 static volatile int rx_write_idx = 0;
 static volatile int rx_read_idx = 0;
 
-// --- Playback buffers (triple buffer) ---
-// playRaw() does NOT copy data — DMA reads directly from the pointer.
+// playRaw: DMA reads from pointer (no copy here).
 #define PB_NUM_BUFFERS 3
 static int16_t pb_buffers[PB_NUM_BUFFERS][TTS_FRAME_SAMPLES];
 static int pb_buf_idx = 0;
@@ -70,14 +67,11 @@ static inline int rx_available() {
     return (w - r + RX_RING_FRAMES) % RX_RING_FRAMES;
 }
 
-// Restart mic from any state (handles both half-duplex and full-duplex)
 static void restart_mic_and_streaming() {
     auto* input = roamcast::internal::getAudioInput();
     if (!input) return;
 
-    // For full-duplex devices, mic was never stopped, so just restore state
     if (!roamcast::internal::isFullDuplex()) {
-        // Half-duplex: reinitialize mic hardware
         const auto* cfg = roamcast::internal::getConfig();
         RoamCastAudioInputConfig input_cfg = {
             AUDIO_SAMPLE_RATE, 16, 8, 2, 256
@@ -182,11 +176,7 @@ void rc_audio_playback_music_flush() {
     RC_DBG("Music flush: cleared buffers");
 }
 
-// Periodic playback state log
-static unsigned long _last_pb_diag_ms = 0;
-
 void rc_audio_playback_loop() {
-    // No speaker = nothing to do
     if (!roamcast::internal::hasSpeaker()) return;
 
     auto* input = roamcast::internal::getAudioInput();
@@ -195,21 +185,9 @@ void rc_audio_playback_loop() {
 
     bool full_duplex = roamcast::internal::isFullDuplex();
 
-    // Periodic playback state dump every 10s (only when not idle)
-    if (pb_state != PB_IDLE) {
-        unsigned long pb_now = millis();
-        if (pb_now - _last_pb_diag_ms >= 5000) {
-            _last_pb_diag_ms = pb_now;
-            RC_DBG("Playback: state=%d isPlaying=%d duplex=%d music=%d",
-                    pb_state, output->isPlaying(), full_duplex, music_mode);
-        }
-    }
-
     switch (pb_state) {
         case PB_IDLE:
             break;
-
-        // ===== Tone playback states =====
 
         case PB_STARTING_SPEAKER: {
             RC_DBG("Playback: PB_STARTING_SPEAKER");
@@ -263,7 +241,6 @@ void rc_audio_playback_loop() {
                 tts_udp_started = false;
             }
             if (full_duplex) {
-                // Full-duplex: mic was never stopped, just restore state
                 if (was_streaming) {
                     rc_audio_capture_start();
                     rc_led_set(RC_LED_BLUE_PULSE);
@@ -282,8 +259,6 @@ void rc_audio_playback_loop() {
             pb_state = PB_IDLE;
             RC_DBG("Playback: mic restarted, complete");
             break;
-
-        // ===== TTS / Music playback states =====
 
         case PB_TTS_STARTING: {
             RC_DBG("Playback: TTS starting...");
@@ -320,7 +295,6 @@ void rc_audio_playback_loop() {
         }
 
         case PB_TTS_ACTIVE: {
-            // === Phase 1: Receive incoming UDP packets into receive ring buffer ===
             int packetSize = tts_udp.parsePacket();
             while (packetSize > 0) {
                 int expected_bytes = TTS_FRAME_SAMPLES * 2;
@@ -352,7 +326,6 @@ void rc_audio_playback_loop() {
                 packetSize = tts_udp.parsePacket();
             }
 
-            // === Phase 2: Copy frames from receive buffer to playback buffers ===
             int queued = 0;
             while (rx_available() > 0 && queued < MAX_QUEUE_PER_LOOP) {
                 int rx_offset = rx_read_idx * TTS_FRAME_SAMPLES;

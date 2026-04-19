@@ -2,7 +2,6 @@
 
 #include <Arduino.h>
 
-// --- Audio Input Configuration ---
 struct RoamCastAudioInputConfig {
     uint32_t sample_rate;       // Default: 16000
     uint8_t magnification;      // Default: 16 (M5Stack-specific, ignored by generic)
@@ -11,14 +10,12 @@ struct RoamCastAudioInputConfig {
     uint16_t dma_buf_len;       // Default: 256
 };
 
-// --- Audio Output Configuration ---
 struct RoamCastAudioOutputConfig {
     uint32_t sample_rate;       // Default: 16000
     uint16_t dma_buf_len;       // Default: 256
     uint8_t dma_buf_count;      // Default: 8
 };
 
-// --- Audio Input Callbacks (REQUIRED) ---
 struct AudioInputCallbacks {
     bool (*init)(const RoamCastAudioInputConfig* cfg);
     bool (*begin)();
@@ -31,7 +28,6 @@ struct AudioInputCallbacks {
     bool (*isFullDuplex)();
 };
 
-// --- Audio Output Callbacks (OPTIONAL — NULL = mic-only device) ---
 struct AudioOutputCallbacks {
     bool (*init)(const RoamCastAudioOutputConfig* cfg);
     bool (*begin)();
@@ -44,35 +40,29 @@ struct AudioOutputCallbacks {
     void (*setVolume)(uint8_t vol);  // 0-255
 };
 
-// --- Status Indicator Callbacks (OPTIONAL — NULL = no LED) ---
 struct StatusIndicatorCallbacks {
     void (*init)();
     void (*setColor)(uint8_t r, uint8_t g, uint8_t b);
     void (*off)();
 };
 
-// --- Button Callbacks (OPTIONAL — NULL = no button) ---
 struct ButtonCallbacks {
     void (*init)();
     bool (*wasClicked)();
     bool (*pressedFor)(uint32_t ms);
 };
 
-// --- Feature Flags ---
 struct RoamCastFeatures {
     bool ble_enabled;           // Requires ROAMCAST_FEATURE_BLE build flag
-    bool csi_enabled;           // Requires ROAMCAST_FEATURE_CSI build flag
     bool encryption_enabled;    // Requires ROAMCAST_FEATURE_ENCRYPTION build flag
     bool modules_enabled;       // Requires ROAMCAST_FEATURE_MODULES build flag
     bool presence_enabled;      // Requires ROAMCAST_FEATURE_PRESENCE build flag
     bool mdns_enabled;          // mDNS hub auto-discovery
 };
 
-// --- Board-level hooks ---
 typedef void (*BoardInitFn)();
 typedef void (*BoardLoopFn)();
 
-// --- Main Configuration Struct ---
 struct RoamCastConfig {
     // Device identity
     const char* hardware_model;         // e.g., "atom_echo_s3r", "my_custom_board"
@@ -100,8 +90,8 @@ struct RoamCastConfig {
     uint8_t gate_hold_frames;           // Default: 5
 
     // Hardware callbacks
-    AudioInputCallbacks* audio_input;   // REQUIRED — must not be NULL
-    AudioOutputCallbacks* audio_output; // NULL = mic-only device (no speaker)
+    AudioInputCallbacks* audio_input;   // required
+    AudioOutputCallbacks* audio_output; // NULL = mic-only
     StatusIndicatorCallbacks* status_indicator;  // NULL = no LED
     ButtonCallbacks* button;            // NULL = no button
 
@@ -132,22 +122,12 @@ struct RoamCastConfig {
     uint16_t ble_scan_window_ms;        // Default: 200
     float ble_rssi_smoothing_alpha;     // Default: 0.3f
 
-    // CSI settings (only used if ROAMCAST_FEATURE_CSI)
-    uint16_t csi_publish_interval_ms;   // Default: 250
-    uint32_t csi_keepalive_ms;          // Default: 5000
-    float csi_publish_threshold;        // Default: 0.05f
-    float csi_smoothing_alpha;          // Default: 0.3f
-    uint8_t csi_history_depth;          // Default: 10
-    float csi_motion_max_variance;      // Default: 500.0f
-
     // mDNS discovery
     uint32_t mdns_discovery_timeout_ms; // Default: 10000
 
-    // Debug logging (0 = essential only, 1 = verbose debug)
-    uint8_t debug_level;                // Default: 0
+    uint8_t debug_level;                // 0 = RC_LOG only; 1 = RC_DBG too. Default: 0
 };
 
-// Helper to create a config with sensible defaults
 inline RoamCastConfig roamcast_default_config() {
     RoamCastConfig cfg = {};
     cfg.hardware_model = "generic_esp32s3";
@@ -173,7 +153,7 @@ inline RoamCastConfig roamcast_default_config() {
     cfg.button = nullptr;
     cfg.board_init = nullptr;
     cfg.board_loop = nullptr;
-    cfg.features = { false, false, false, false, false, true };
+    cfg.features = { false, false, false, false, true };
     cfg.portal_ap_name = "RoamCast-Setup";
     cfg.factory_reset_hold_ms = 5000;
     cfg.i2c_sda_pin = -1;
@@ -186,12 +166,6 @@ inline RoamCastConfig roamcast_default_config() {
     cfg.ble_scan_interval_ms = 500;
     cfg.ble_scan_window_ms = 200;
     cfg.ble_rssi_smoothing_alpha = 0.3f;
-    cfg.csi_publish_interval_ms = 250;
-    cfg.csi_keepalive_ms = 5000;
-    cfg.csi_publish_threshold = 0.05f;
-    cfg.csi_smoothing_alpha = 0.3f;
-    cfg.csi_history_depth = 10;
-    cfg.csi_motion_max_variance = 500.0f;
     cfg.mdns_discovery_timeout_ms = 10000;
     cfg.debug_level = 0;
     return cfg;

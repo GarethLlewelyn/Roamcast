@@ -24,7 +24,6 @@ static const KnownModule KNOWN_MODULES[] = {
 };
 static const int KNOWN_MODULE_COUNT = sizeof(KNOWN_MODULES) / sizeof(KNOWN_MODULES[0]);
 
-// --- Config (stored from init parameters) ---
 static int _cfg_sda_pin = -1;
 static int _cfg_scl_pin = -1;
 static uint32_t _cfg_scan_interval_ms = 60000;
@@ -62,11 +61,9 @@ static bool _do_scan() {
             new_detected[new_count].capability = KNOWN_MODULES[i].capability;
             new_detected[new_count].active = true;
             new_count++;
-            Serial.printf("  I2C 0x%02X: %s\n", KNOWN_MODULES[i].address, KNOWN_MODULES[i].name);
         }
     }
 
-    // Check if anything changed
     if (new_count != _detected_count) {
         changed = true;
     } else {
@@ -103,33 +100,22 @@ static void _publish_modules() {
     char buffer[512];
     serializeJson(doc, buffer, sizeof(buffer));
     rc_mqtt_publish_modules(buffer);
-
-    Serial.printf("Published modules: %d detected\n", _detected_count);
 }
-
-// --- Public API ---
 
 void module_scanner_init(int sda_pin, int scl_pin, uint32_t scan_interval_ms) {
     _cfg_sda_pin = sda_pin;
     _cfg_scl_pin = scl_pin;
     _cfg_scan_interval_ms = scan_interval_ms;
 
-    // Explicitly initialize Wire on the configured pins
     Wire.begin(_cfg_sda_pin, _cfg_scl_pin);
-    Serial.printf("Module scanner: Wire initialized on SDA=%d, SCL=%d\n",
-                  _cfg_sda_pin, _cfg_scl_pin);
 
-    // Run the initial scan
-    Serial.println("Module scanner: initial I2C scan...");
     _do_scan();
-    Serial.printf("Module scanner: %d modules detected\n", _detected_count);
     _last_scan_ms = millis();
 }
 
 void module_scanner_loop() {
     unsigned long now = millis();
 
-    // Publish initial modules after MQTT is connected (deferred from init)
     if (!_initial_publish_done && rc_mqtt_is_connected()) {
         _publish_modules();
         _initial_publish_done = true;
@@ -151,7 +137,6 @@ void module_scanner_loop() {
 
 void module_scanner_force_scan() {
     _force_scan = true;
-    Serial.println("Module scanner: force scan requested");
 }
 
 uint8_t module_scanner_get_count() {

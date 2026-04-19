@@ -10,7 +10,6 @@
 #include <Wire.h>
 #include <M5_STHS34PF80.h>
 
-// --- Config (stored from init parameters) ---
 static int _cfg_sda_pin = 2;
 static int _cfg_scl_pin = 1;
 static uint8_t _cfg_i2c_addr = 0x5A;
@@ -40,26 +39,18 @@ static String get_presence_timestamp() {
 }
 
 static bool _init_sensor() {
-    // Initialize STHS34PF80 via M5Stack library
-    // Wire is already initialized by module_scanner_init()
     if (!_tmos.begin(&Wire, _cfg_i2c_addr, _cfg_sda_pin, _cfg_scl_pin)) {
         Serial.println("Presence sensor: STHS34PF80 begin() failed");
         return false;
     }
 
-    // Configure sensor
     _tmos.setPresenceThreshold(_cfg_presence_threshold);
     _tmos.setMotionThreshold(_cfg_motion_threshold);
-
-    Serial.println("Presence sensor: STHS34PF80 configured");
-    Serial.printf("  Presence threshold: %d\n", _cfg_presence_threshold);
-    Serial.printf("  Motion threshold: %d\n", _cfg_motion_threshold);
 
     return true;
 }
 
 static void _read_sensor() {
-    // Check if new data is available
     sths34pf80_tmos_drdy_status_t drdy;
     _tmos.getDataReady(&drdy);
     if (!drdy.drdy) {
@@ -70,7 +61,6 @@ static void _read_sensor() {
     sths34pf80_tmos_func_status_t status;
     _tmos.getStatus(&status);
 
-    // Read raw presence and motion values
     int16_t presence_val = 0;
     int16_t motion_val = 0;
     float temp = 0.0f;
@@ -90,15 +80,12 @@ static void _read_sensor() {
 static bool _should_publish() {
     unsigned long now = millis();
 
-    // Always publish on state change
     if (_current.occupied != _last_published.occupied) return true;
     if (_current.motion != _last_published.motion) return true;
 
-    // Publish if presence value changed significantly (>50 units)
     int pres_delta = abs((int)_current.presence_val - (int)_last_published.presence_val);
     if (pres_delta > 50) return true;
 
-    // Keepalive publish
     if (now - _last_publish_ms >= _cfg_keepalive_ms) return true;
 
     return false;
@@ -121,8 +108,6 @@ static void _publish_presence() {
     _last_publish_ms = millis();
 }
 
-// --- Public API ---
-
 void presence_sensor_init(int sda_pin, int scl_pin, uint8_t i2c_addr,
                           uint16_t presence_threshold, uint16_t motion_threshold,
                           uint32_t read_interval_ms, uint32_t keepalive_ms) {
@@ -137,32 +122,25 @@ void presence_sensor_init(int sda_pin, int scl_pin, uint8_t i2c_addr,
     _available = module_scanner_has_module("presence_tmos");
 
     if (_available) {
-        if (_init_sensor()) {
-            Serial.printf("Presence sensor: initialized (TMOS PIR at 0x%02X)\n", _cfg_i2c_addr);
-        } else {
+        if (!_init_sensor()) {
             _available = false;
             Serial.println("Presence sensor: TMOS PIR detected on I2C but driver init failed");
         }
-    } else {
-        Serial.println("Presence sensor: no TMOS PIR module detected");
     }
 }
 
 void presence_sensor_loop() {
     unsigned long now = millis();
 
-    // Check for hot-plug if not yet available
     if (!_available) {
         if (module_scanner_has_module("presence_tmos")) {
             if (_init_sensor()) {
                 _available = true;
-                Serial.println("Presence sensor: TMOS PIR hot-plugged and initialized");
             }
         }
         return;
     }
 
-    // Rate-limit reads
     if (now - _last_read_ms < _cfg_read_interval_ms) return;
     _last_read_ms = now;
 

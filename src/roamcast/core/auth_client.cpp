@@ -164,8 +164,6 @@ static bool do_login(const char* username, const char* password) {
     return false;
 }
 
-// ---- Public API ----
-
 void rc_auth_client_init(const char* device_id) {
     _device_id = device_id;
     _state = RC_AUTH_NOT_STARTED;

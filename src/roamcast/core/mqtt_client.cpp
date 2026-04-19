@@ -32,7 +32,6 @@ static char _firmware_version[32];
 static char _hardware_model[32];
 static bool _has_speaker = false;
 static bool _has_led = false;
-static bool _has_csi = false;
 static bool _has_ble = false;
 static bool _is_full_duplex = false;
 static uint16_t _udp_audio_port = 5100;
@@ -46,7 +45,6 @@ static char topic_command[80];
 static char topic_capabilities[80];
 static char topic_modules[80];
 static char topic_presence[80];
-static char topic_csi_motion[80];
 static char topic_ble_proximity[80];
 
 static String get_timestamp() {
@@ -69,7 +67,6 @@ static void build_capabilities_array(JsonArray& caps) {
     if (rc_module_scanner_has_module("touch")) caps.add("buttons");
     if (rc_module_scanner_has_module("light_sensor")) caps.add("sensors");
 #endif
-    if (_has_csi) caps.add("csi_motion");
     if (_has_ble) caps.add("ble_proximity");
     if (_is_full_duplex) caps.add("full_duplex");
 }
@@ -127,10 +124,10 @@ static void do_connect() {
 
         rc_mqtt_publish_discovery(_firmware_version, _hardware_model,
                                   _has_speaker, _has_led,
-                                  _has_csi, _has_ble, _is_full_duplex,
+                                  _has_ble, _is_full_duplex,
                                   _udp_audio_port);
         rc_mqtt_publish_capabilities(_has_speaker, _has_led,
-                                     _has_csi, _has_ble, _is_full_duplex);
+                                     _has_ble, _is_full_duplex);
     } else {
         RC_LOG("MQTT connection failed (rc=%d)", client.state());
     }
@@ -173,8 +170,6 @@ void rc_mqtt_init(const char* device_id, const char* mqtt_user, const char* mqtt
              "satellite/devices/%s/modules", device_id);
     snprintf(topic_presence, sizeof(topic_presence),
              "satellite/devices/%s/presence/data", device_id);
-    snprintf(topic_csi_motion, sizeof(topic_csi_motion),
-             "satellite/devices/%s/csi/motion", device_id);
     snprintf(topic_ble_proximity, sizeof(topic_ble_proximity),
              "satellite/devices/%s/ble/proximity", device_id);
 
@@ -204,7 +199,7 @@ bool rc_mqtt_is_connected() {
 
 void rc_mqtt_publish_discovery(const char* firmware_version, const char* hardware_model,
                                bool has_speaker, bool has_led,
-                               bool has_csi, bool has_ble, bool is_full_duplex,
+                               bool has_ble, bool is_full_duplex,
                                uint16_t udp_audio_port) {
     strncpy(_firmware_version, firmware_version ? firmware_version : "0.0.0",
             sizeof(_firmware_version) - 1);
@@ -214,7 +209,6 @@ void rc_mqtt_publish_discovery(const char* firmware_version, const char* hardwar
     _hardware_model[sizeof(_hardware_model) - 1] = '\0';
     _has_speaker = has_speaker;
     _has_led = has_led;
-    _has_csi = has_csi;
     _has_ble = has_ble;
     _is_full_duplex = is_full_duplex;
     _udp_audio_port = udp_audio_port;
@@ -241,10 +235,9 @@ void rc_mqtt_publish_discovery(const char* firmware_version, const char* hardwar
 }
 
 void rc_mqtt_publish_capabilities(bool has_speaker, bool has_led,
-                                   bool has_csi, bool has_ble, bool is_full_duplex) {
+                                   bool has_ble, bool is_full_duplex) {
     _has_speaker = has_speaker;
     _has_led = has_led;
-    _has_csi = has_csi;
     _has_ble = has_ble;
     _is_full_duplex = is_full_duplex;
 
@@ -312,10 +305,6 @@ void rc_mqtt_publish_modules(const char* modules_json) {
 
 void rc_mqtt_publish_presence(const char* presence_json) {
     client.publish(topic_presence, presence_json);
-}
-
-void rc_mqtt_publish_csi_motion(const char* csi_json) {
-    client.publish(topic_csi_motion, csi_json);
 }
 
 void rc_mqtt_publish_ble_proximity(const char* ble_json) {

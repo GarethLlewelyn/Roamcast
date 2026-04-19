@@ -1,7 +1,6 @@
 #include "GenericESP32S3.h"
 #include <driver/i2s.h>
 
-// --- Static pin config ---
 static GenericESP32S3Pins _pins = {};
 static bool _mic_recording = false;
 static int16_t* _mic_buffer = nullptr;
@@ -16,8 +15,6 @@ static uint8_t _spk_volume = 128;
 static i2s_port_t spk_port() {
     return _pins.full_duplex ? SPK_I2S_PORT : MIC_I2S_PORT;
 }
-
-// --- Mic callbacks ---
 
 static bool mic_init(const RoamCastAudioInputConfig* cfg) {
     i2s_config_t i2s_cfg = {};
@@ -91,8 +88,6 @@ static bool mic_is_recording_done() {
 static bool mic_is_full_duplex() {
     return _pins.full_duplex;
 }
-
-// --- Speaker callbacks ---
 
 static bool spk_init(const RoamCastAudioOutputConfig* cfg) {
     if (_pins.spk_pin_data < 0) return false;
@@ -169,8 +164,6 @@ static void spk_set_volume(uint8_t vol) {
     _spk_volume = vol;
 }
 
-// --- LED callbacks ---
-
 static int _led_pin = -1;
 
 static void led_init_fn() {
@@ -190,8 +183,6 @@ static void led_off() {
         neopixelWrite(_led_pin, 0, 0, 0);
     }
 }
-
-// --- Button callbacks ---
 
 static int _btn_pin = -1;
 static bool _btn_last_state = true;  // INPUT_PULLUP: idle = HIGH
@@ -234,8 +225,6 @@ static bool btn_pressed_for(uint32_t ms) {
     return false;
 }
 
-// --- Static callback struct instances ---
-
 static AudioInputCallbacks _mic_cbs = {
     mic_init, mic_begin, mic_end, mic_record,
     mic_is_recording_done, mic_is_full_duplex
@@ -249,15 +238,11 @@ static AudioOutputCallbacks _spk_cbs = {
 static StatusIndicatorCallbacks _led_cbs = { led_init_fn, led_set_color, led_off };
 static ButtonCallbacks _btn_cbs = { btn_init_fn, btn_was_clicked, btn_pressed_for };
 
-// --- Board hooks ---
-
 static void board_init() {
     Serial.begin(115200);
     delay(100);
     Serial.println("[GenericESP32S3] Board initialized");
 }
-
-// --- Public API ---
 
 RoamCastConfig GenericESP32S3::config(GenericESP32S3Pins pins) {
     _pins = pins;
@@ -276,7 +261,6 @@ RoamCastConfig GenericESP32S3::config(GenericESP32S3Pins pins) {
     cfg.board_init = board_init;
     cfg.board_loop = nullptr;
 
-    // Generic boards don't have M5Stack-specific hardware
     cfg.features.modules_enabled = false;
     cfg.features.presence_enabled = false;
     cfg.features.mdns_enabled = true;
