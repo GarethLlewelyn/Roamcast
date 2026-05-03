@@ -20,11 +20,11 @@ void rc_mdns_discovery_init() {
 bool rc_mdns_discovery_find_hub(uint32_t timeout_ms) {
     if (!_initialized) return false;
 
-    RC_DBG("mDNS: Searching for _audiocombine._tcp...");
+    RC_DBG("mDNS: Searching for _roamcast._tcp...");
 
     unsigned long start = millis();
     while (millis() - start < timeout_ms) {
-        int n = MDNS.queryService("audiocombine", "tcp");
+        int n = MDNS.queryService("roamcast", "tcp");
         if (n > 0) {
             IPAddress ip = MDNS.IP(0);
             uint16_t port = MDNS.port(0);
